@@ -13,7 +13,7 @@
 #include "Common/CodeGenDAGPatterns.h"
 #include "Common/CodeGenInstruction.h"
 #include "Common/CodeGenTarget.h"
-#include "Common/DAGISelMatcher.h"
+#include "DAGISelMatcher.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/TableGen/Record.h"
 #include "llvm/TableGen/TGTimer.h"
@@ -30,7 +30,7 @@ class DAGISelEmitter {
   const CodeGenDAGPatterns CGP;
 
 public:
-  explicit DAGISelEmitter(const RecordKeeper &R) : Records(R), CGP(R) {}
+  explicit DAGISelEmitter(const RecordKeeper &R) : Records(R), CGP(R, false) {}
   void run(raw_ostream &OS);
 };
 } // End anonymous namespace
@@ -42,7 +42,7 @@ public:
 /// Compute the number of instructions for this pattern.
 /// This is a temporary hack.  We should really include the instruction
 /// latencies in this calculation.
-static unsigned getResultPatternCost(TreePatternNode &P,
+static unsigned getResultPatternCost(const TreePatternNode &P,
                                      const CodeGenDAGPatterns &CGP) {
   if (P.isLeaf())
     return 0;
@@ -51,18 +51,18 @@ static unsigned getResultPatternCost(TreePatternNode &P,
   const Record *Op = P.getOperator();
   if (Op->isSubClassOf("Instruction")) {
     Cost++;
-    CodeGenInstruction &II = CGP.getTargetInfo().getInstruction(Op);
+    const CodeGenInstruction &II = CGP.getTargetInfo().getInstruction(Op);
     if (II.usesCustomInserter)
       Cost += 10;
   }
-  for (unsigned i = 0, e = P.getNumChildren(); i != e; ++i)
-    Cost += getResultPatternCost(P.getChild(i), CGP);
+  for (const TreePatternNode &Child : P.children())
+    Cost += getResultPatternCost(Child, CGP);
   return Cost;
 }
 
 /// getResultPatternCodeSize - Compute the code size of instructions for this
 /// pattern.
-static unsigned getResultPatternSize(TreePatternNode &P,
+static unsigned getResultPatternSize(const TreePatternNode &P,
                                      const CodeGenDAGPatterns &CGP) {
   if (P.isLeaf())
     return 0;
@@ -72,8 +72,8 @@ static unsigned getResultPatternSize(TreePatternNode &P,
   if (Op->isSubClassOf("Instruction")) {
     Cost += Op->getValueAsInt("CodeSize");
   }
-  for (unsigned i = 0, e = P.getNumChildren(); i != e; ++i)
-    Cost += getResultPatternSize(P.getChild(i), CGP);
+  for (const TreePatternNode &Child : P.children())
+    Cost += getResultPatternSize(Child, CGP);
   return Cost;
 }
 
@@ -89,13 +89,30 @@ struct PatternSortingPredicate {
     const TreePatternNode &LT = LHS->getSrcPattern();
     const TreePatternNode &RT = RHS->getSrcPattern();
 
-    MVT LHSVT = LT.getNumTypes() != 0 ? LT.getSimpleType(0) : MVT::Other;
-    MVT RHSVT = RT.getNumTypes() != 0 ? RT.getSimpleType(0) : MVT::Other;
-    if (LHSVT.isVector() != RHSVT.isVector())
-      return RHSVT.isVector();
+    bool LHSIsVector = false;
+    bool RHSIsVector = false;
+    bool LHSIsFP = false;
+    bool RHSIsFP = false;
 
-    if (LHSVT.isFloatingPoint() != RHSVT.isFloatingPoint())
-      return RHSVT.isFloatingPoint();
+    if (LT.getNumTypes() != 0) {
+      for (auto [_, VT] : LT.getType(0)) {
+        LHSIsVector |= VT.isVector();
+        LHSIsFP |= VT.isFloatingPoint();
+      }
+    }
+
+    if (RT.getNumTypes() != 0) {
+      for (auto [_, VT] : RT.getType(0)) {
+        RHSIsVector |= VT.isVector();
+        RHSIsFP |= VT.isFloatingPoint();
+      }
+    }
+
+    if (LHSIsVector != RHSIsVector)
+      return RHSIsVector;
+
+    if (LHSIsFP != RHSIsFP)
+      return RHSIsFP;
 
     // Otherwise, if the patterns might both match, sort based on complexity,
     // which means that we prefer to match patterns that cover more nodes in the

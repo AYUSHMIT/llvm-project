@@ -8,7 +8,7 @@
 
 #include "AMDGPUMachineFunction.h"
 #include "AMDGPU.h"
-#include "AMDGPUPerfHintAnalysis.h"
+#include "AMDGPUMemoryUtils.h"
 #include "AMDGPUSubtarget.h"
 #include "Utils/AMDGPUBaseInfo.h"
 #include "llvm/CodeGen/MachineModuleInfo.h"
@@ -102,6 +102,15 @@ unsigned AMDGPUMachineFunction::allocateLDSGlobal(const DataLayout &DL,
 
   unsigned Offset;
   if (GV.getAddressSpace() == AMDGPUAS::LOCAL_ADDRESS) {
+    if (AMDGPU::isNamedBarrier(GV)) {
+      std::optional<unsigned> BarAddr = getLDSAbsoluteAddress(GV);
+      if (!BarAddr)
+        llvm_unreachable("named barrier should have an assigned address");
+      Entry.first->second = BarAddr.value();
+      unsigned BarCnt = GV.getGlobalSize(DL) / 16;
+      recordNumNamedBarriers(BarAddr.value(), BarCnt);
+      return BarAddr.value();
+    }
 
     std::optional<uint32_t> MaybeAbs = getLDSAbsoluteAddress(GV);
     if (MaybeAbs) {
@@ -126,8 +135,7 @@ unsigned AMDGPUMachineFunction::allocateLDSGlobal(const DataLayout &DL,
         // section, and not within some other non-absolute-address object
         // allocated here, but the extra error detection is minimal and we would
         // have to pass the Function around or cache the attribute value.
-        uint32_t ObjectEnd =
-            ObjectStart + DL.getTypeAllocSize(GV.getValueType());
+        uint32_t ObjectEnd = ObjectStart + GV.getGlobalSize(DL);
         if (ObjectEnd > StaticLDSSize) {
           report_fatal_error(
               "Absolute address LDS variable outside of static frame");
@@ -143,7 +151,7 @@ unsigned AMDGPUMachineFunction::allocateLDSGlobal(const DataLayout &DL,
     /// during lowering.
     Offset = StaticLDSSize = alignTo(StaticLDSSize, Alignment);
 
-    StaticLDSSize += DL.getTypeAllocSize(GV.getValueType());
+    StaticLDSSize += GV.getGlobalSize(DL);
 
     // Align LDS size to trailing, e.g. for aligning dynamic shared memory
     LDSSize = alignTo(StaticLDSSize, Trailing);
@@ -152,7 +160,7 @@ unsigned AMDGPUMachineFunction::allocateLDSGlobal(const DataLayout &DL,
            "expected region address space");
 
     Offset = StaticGDSSize = alignTo(StaticGDSSize, Alignment);
-    StaticGDSSize += DL.getTypeAllocSize(GV.getValueType());
+    StaticGDSSize += GV.getGlobalSize(DL);
 
     // FIXME: Apply alignment of dynamic GDS
     GDSSize = StaticGDSSize;
@@ -201,7 +209,7 @@ void AMDGPUMachineFunction::setDynLDSAlign(const Function &F,
                                            const GlobalVariable &GV) {
   const Module *M = F.getParent();
   const DataLayout &DL = M->getDataLayout();
-  assert(DL.getTypeAllocSize(GV.getValueType()).isZero());
+  assert(GV.getGlobalSize(DL) == 0);
 
   Align Alignment =
       DL.getValueOrABITypeAlignment(GV.getAlign(), GV.getValueType());
