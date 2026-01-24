@@ -1,0 +1,53 @@
+name: LLVM DemoKit
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-demo:
+    runs-on: ubuntu-latest
+    env:
+      CC: clang
+      CXX: clang++
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache LLVM build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ github.workspace }}/build
+          key: llvm-${{ runner.os }}-${{ hashFiles('**/CMakeLists.txt', 'llvm/CMakeLists.txt') }}
+
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build cmake python3
+
+      - name: Configure (minimal tools)
+        run: |
+          cmake -S llvm -B build \
+            -G Ninja \
+            -DLLVM_ENABLE_PROJECTS="clang;lld" \
+            -DLLVM_TARGETS_TO_BUILD="X86;AArch64;WebAssembly" \
+            -DLLVM_INCLUDE_TESTS=OFF \
+            -DLLVM_INCLUDE_EXAMPLES=OFF \
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build essential tools
+        run: |
+          cmake --build build --target \
+            clang llvm-as llvm-dis opt llc llvm-mc llvm-objdump llvm-bcanalyzer lld
+
+      - name: Run demo pipeline
+        run: |
+          export PATH="${GITHUB_WORKSPACE}/build/bin:${PATH}"
+          bash scripts/demo.sh
+        shell: bash
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: demo-artifacts
+          path: out/
