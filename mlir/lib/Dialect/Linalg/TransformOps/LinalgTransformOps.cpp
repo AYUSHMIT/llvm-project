@@ -3646,6 +3646,16 @@ transform::TileUsingForOp::apply(transform::TransformRewriter &rewriter,
     if (failed(maybeTilingResult))
       return DiagnosedSilenceableFailure::definiteFailure();
 
+    // Validate that the number of loops produced matches the number of loop
+    // results expected by the transform op to prevent out-of-bounds access.
+    if (maybeTilingResult->loops.size() != loops.size()) {
+      DiagnosedSilenceableFailure diag = emitSilenceableError()
+          << "expected " << loops.size() << " loop results but tiling produced "
+          << maybeTilingResult->loops.size() << " loops";
+      diag.attachNote(op->getLoc()) << "target op";
+      return diag;
+    }
+
     rewriter.replaceOp(op, maybeTilingResult->replacements);
 
     tiled.append(maybeTilingResult->tiledOps);
